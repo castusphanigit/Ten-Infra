@@ -113,36 +113,12 @@ permissions:
   contents: read
 
 jobs:
-  detect-envs:
-    name: Detect Environments
-    runs-on: ubuntu-latest
-    outputs:
-      envs: ${{ steps.detect.outputs.envs }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Detect available .tfvars
-        id: detect
-        run: |
-          # List .tfvars files and remove extension
-          ENVS=$(ls *.tfvars 2>/dev/null | sed 's/\.tfvars//g')
-          if [ -z "$ENVS" ]; then
-            ENVS='[]'
-          else
-            ENVS=$(echo $ENVS | jq -R -s -c 'split("\n")[:-1]')
-          fi
-          echo "Detected envs: $ENVS"
-          echo "envs=$ENVS" >> $GITHUB_OUTPUT
-
   terraform-plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
-    needs: detect-envs
     strategy:
-      fail-fast: false
       matrix:
-        env: ${{ fromJSON(needs.detect-envs.outputs.envs) }}
+        env: [dev, qa, uat, prod]
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -158,7 +134,17 @@ jobs:
           role-to-assume: arn:aws:iam::593002333172:role/BE_Github_Actions
           aws-region: ap-south-1
 
+      - name: Check if tfvars exists
+        id: check_tfvars
+        run: |
+          if [ -f "${{ matrix.env }}.tfvars" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Terraform Init
+        if: steps.check_tfvars.outputs.exists == 'true'
         run: |
           terraform init \
             -backend-config="bucket=ten-terraform-statefile" \
@@ -168,27 +154,24 @@ jobs:
             -reconfigure
 
       - name: Terraform Validate
+        if: steps.check_tfvars.outputs.exists == 'true'
         run: terraform validate
 
       - name: Terraform Plan
+        if: steps.check_tfvars.outputs.exists == 'true'
         run: terraform plan -var-file="${{ matrix.env }}.tfvars" -out=tfplan
 
       - name: Upload tfplan artifact
+        if: steps.check_tfvars.outputs.exists == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ matrix.env }}
           path: tfplan
 
-  terraform-apply:
-    name: Terraform Apply
+  terraform-apply-dev:
+    name: Terraform Apply (dev/qa)
     runs-on: ubuntu-latest
     needs: terraform-plan
-    strategy:
-      fail-fast: false
-      matrix:
-        env: ${{ fromJSON(needs.detect-envs.outputs.envs) }}
-    environment: ${{ matrix.env }}
-    if: needs.detect-envs.outputs.envs != '[]'
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -204,12 +187,66 @@ jobs:
           role-to-assume: arn:aws:iam::593002333172:role/BE_Github_Actions
           aws-region: ap-south-1
 
-      - name: Download tfplan
+      - name: Download tfplan (dev)
         uses: actions/download-artifact@v4
         with:
-          name: tfplan-${{ matrix.env }}
+          name: tfplan-dev
           path: .
+        continue-on-error: true
 
-      # Auto-apply for dev/qa, requires environment approval for uat/prod
-      - name: Terraform Apply
+      - name: Apply dev.tfvars
+        if: steps.download-tfplan.outputs != ''
         run: terraform apply -auto-approve tfplan
+
+      - name: Download tfplan (qa)
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-qa
+          path: .
+        continue-on-error: true
+
+      - name: Apply qa.tfvars
+        if: steps.download-tfplan.outputs != ''
+        run: terraform apply -auto-approve tfplan
+
+  terraform-apply-uat-prod:
+    name: Terraform Apply (uat/prod)
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    environment: ${{ github.event.inputs.env || 'uat-prod' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::593002333172:role/BE_Github_Actions
+          aws-region: ap-south-1
+
+      - name: Download tfplan (uat)
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-uat
+          path: .
+        continue-on-error: true
+
+      - name: Apply uat.tfvars
+        if: steps.download-tfplan.outputs != ''
+        run: terraform apply tfplan
+
+      - name: Download tfplan (prod)
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+          path: .
+        continue-on-error: true
+
+      - name: Apply prod.tfvars
+        if: steps.download-tfplan.outputs != ''
+        run: terraform apply tfplan
