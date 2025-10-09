@@ -6,36 +6,49 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 jobs:
-  terraform-plan:
-    name: Terraform Plan
+  detect-environments:
+    name: Detect Environments
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        env: [dev, qa, uat, prod]
-
+    outputs:
+      environments: ${{ steps.detect.outputs.env_list }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check if tfvars exists
-        id: check_tfvars
+      - name: Detect .tfvars files
+        id: detect
         run: |
-          if [ -f "${{ matrix.env }}.tfvars" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          files=$(ls *.tfvars 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "No tfvars files found, skipping..."
+            echo "env_list=[]" >> $GITHUB_OUTPUT
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            envs=$(echo "$files" | sed 's/.tfvars//g' | jq -R -s -c 'split("\n")[:-1]')
+            echo "Detected environments: $envs"
+            echo "env_list=$envs" >> $GITHUB_OUTPUT
           fi
 
+  terraform-plan:
+    name: Terraform Plan
+    needs: detect-environments
+    if: ${{ fromJson(needs.detect-environments.outputs.environments) != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: ${{ fromJson(needs.detect-environments.outputs.environments) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup Terraform
-        if: steps.check_tfvars.outputs.exists == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.0
 
       - name: Configure AWS credentials via OIDC
-        if: steps.check_tfvars.outputs.exists == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::593002333172:role/BE_Github_Actions
@@ -43,7 +56,6 @@ jobs:
           role-session-name: github-actions
 
       - name: Terraform Init
-        if: steps.check_tfvars.outputs.exists == 'true'
         run: terraform init \
           -backend-config="bucket=ten-terraform-statefile" \
           -backend-config="key=terraform/${{ matrix.env }}/terraform.tfstate" \
@@ -52,23 +64,19 @@ jobs:
           -reconfigure
 
       - name: Terraform Validate
-        if: steps.check_tfvars.outputs.exists == 'true'
         run: terraform validate
 
       - name: Terraform Plan
-        if: steps.check_tfvars.outputs.exists == 'true'
         id: plan
         run: terraform plan -var-file="${{ matrix.env }}.tfvars" -out=tfplan-${{ matrix.env }}
 
       - name: Upload Plan Artifact
-        if: steps.check_tfvars.outputs.exists == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ matrix.env }}
           path: tfplan-${{ matrix.env }}
 
       - name: Post Plan Comment
-        if: steps.check_tfvars.outputs.exists == 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: Terraform Plan (${{ matrix.env }})
