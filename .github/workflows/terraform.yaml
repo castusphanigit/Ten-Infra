@@ -125,4 +125,6 @@ jobs:
           name: tfplan-${{ matrix.env }}
           path: .
 
-      - name: Terraform Appl
+      - name: Terraform Apply (UAT/PROD)
+        run: terraform apply tfplan
+        # GitHub will pause here if the environment requires manual approval
