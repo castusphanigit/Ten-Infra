@@ -1,0 +1,79 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [dev, qa, uat, prod]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check if tfvars exists
+        id: check_tfvars
+        run: |
+          if [ -f "${{ matrix.env }}.tfvars" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Terraform
+        if: steps.check_tfvars.outputs.exists == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Configure AWS credentials via OIDC
+        if: steps.check_tfvars.outputs.exists == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::593002333172:role/BE_Github_Actions
+          aws-region: ap-south-1
+          role-session-name: github-actions
+
+      - name: Terraform Init
+        if: steps.check_tfvars.outputs.exists == 'true'
+        run: terraform init \
+          -backend-config="bucket=ten-terraform-statefile" \
+          -backend-config="key=terraform/${{ matrix.env }}/terraform.tfstate" \
+          -backend-config="region=ap-south-1" \
+          -backend-config="encrypt=true" \
+          -reconfigure
+
+      - name: Terraform Validate
+        if: steps.check_tfvars.outputs.exists == 'true'
+        run: terraform validate
+
+      - name: Terraform Plan
+        if: steps.check_tfvars.outputs.exists == 'true'
+        id: plan
+        run: terraform plan -var-file="${{ matrix.env }}.tfvars" -out=tfplan-${{ matrix.env }}
+
+      - name: Upload Plan Artifact
+        if: steps.check_tfvars.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.env }}
+          path: tfplan-${{ matrix.env }}
+
+      - name: Post Plan Comment
+        if: steps.check_tfvars.outputs.exists == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: Terraform Plan (${{ matrix.env }})
+          message: |
+            ### Terraform Plan for **${{ matrix.env }}**
+            ```
+            ${{ steps.plan.outputs.stdout }}
+            ```
