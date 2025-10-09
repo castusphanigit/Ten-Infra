@@ -1,0 +1,9 @@
+variable "db_secret_name" {}
+variable "engine_version" {}
+variable "db_name" {}
+variable "instance_class" {}
+variable "security_group_ids" {}
+variable "rds_tags" {}
+variable "db_subnet_group" {}
+variable "rds_name" {}
+variable "subnet_ids" {}
