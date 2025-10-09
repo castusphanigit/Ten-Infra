@@ -1,11 +1,13 @@
-name: Terraform Plan
+name: Terraform Apply
 
 on:
-  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: write
   id-token: write
 
 jobs:
@@ -31,14 +33,16 @@ jobs:
             echo "env_list=$envs" >> $GITHUB_OUTPUT
           fi
 
-  terraform-plan:
-    name: Terraform Plan
+  terraform-apply:
+    name: Terraform Apply
     needs: detect-environments
     if: ${{ fromJson(needs.detect-environments.outputs.environments) != '' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
         env: ${{ fromJson(needs.detect-environments.outputs.environments) }}
+    environment: ${{ matrix.env }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -63,25 +67,16 @@ jobs:
           -backend-config="encrypt=true" \
           -reconfigure
 
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Terraform Plan
-        id: plan
-        run: terraform plan -var-file="${{ matrix.env }}.tfvars" -out=tfplan-${{ matrix.env }}
-
-      - name: Upload Plan Artifact
-        uses: actions/upload-artifact@v4
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ matrix.env }}
-          path: tfplan-${{ matrix.env }}
+          path: .
 
-      - name: Post Plan Comment
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: Terraform Plan (${{ matrix.env }})
-          message: |
-            ### Terraform Plan for **${{ matrix.env }}**
-            ```
-            ${{ steps.plan.outputs.stdout }}
-            ```
+      - name: Terraform Apply (Dev/QA)
+        if: ${{ matrix.env == 'dev' || matrix.env == 'qa' }}
+        run: terraform apply -auto-approve tfplan-${{ matrix.env }}
+
+      - name: Terraform Apply (UAT/Prod)
+        if: ${{ matrix.env == 'uat' || matrix.env == 'prod' }}
+        run: terraform apply tfplan-${{ matrix.env }}
