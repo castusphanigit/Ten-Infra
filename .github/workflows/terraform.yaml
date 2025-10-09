@@ -1,4 +1,4 @@
-# name: Terraform Deploy with OIDC, Validation & Manual Approval
+## name: Terraform Deploy with OIDC, Validation & Manual Approval
 
 # on:
 #   push:
