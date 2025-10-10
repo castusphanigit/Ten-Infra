@@ -1,50 +1,62 @@
-name: Terraform Apply
+name: tf-plan
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: read
+  pull-requests: write
   id-token: write
 
 jobs:
   detect-environments:
-    name: Detect Environments
+    name: Detect .tfvars Environments
     runs-on: ubuntu-latest
     outputs:
-      environments: ${{ steps.detect.outputs.env_list }}
+      env_list: ${{ steps.set.outputs.json_envs }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect .tfvars files
-        id: detect
+      - name: Detect .tfvars
+        id: set
         run: |
+          # Build JSON array of env names from *.tfvars
           files=$(ls *.tfvars 2>/dev/null || true)
           if [ -z "$files" ]; then
-            echo "No tfvars files found, skipping..."
-            echo "env_list=[]" >> $GITHUB_OUTPUT
-          else
-            envs=$(echo "$files" | sed 's/.tfvars//g' | jq -R -s -c 'split("\n")[:-1]')
-            echo "Detected environments: $envs"
-            echo "env_list=$envs" >> $GITHUB_OUTPUT
+            echo "json_envs=[]" >> $GITHUB_OUTPUT
+            echo "No .tfvars files found."
+            exit 0
           fi
 
-  terraform-apply:
-    name: Terraform Apply
+          envs=()
+          for f in $files; do
+            # skip files that don't end with .tfvars just in case
+            if [[ "$f" == *.tfvars ]]; then
+              envs+=("${f%.tfvars}")
+            fi
+          done
+
+          # Build JSON array
+          jq_input=$(printf '%s\n' "${envs[@]}" | awk 'BEGIN{ORS=","} {printf "\"%s\"", $0} END{print ""}' | sed 's/,$//')
+          json="[$jq_input]"
+          echo "Detected envs: $json"
+          echo "json_envs=$json" >> $GITHUB_OUTPUT
+
+  terraform-plan:
+    name: Terraform Plan (per environment)
     needs: detect-environments
-    if: ${{ fromJson(needs.detect-environments.outputs.environments) != '' }}
+    if: ${{ needs.detect-environments.outputs.env_list != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        env: ${{ fromJson(needs.detect-environments.outputs.environments) }}
-    environment: ${{ matrix.env }}
+        env: ${{ fromJson(needs.detect-environments.outputs.env_list) }}
+    defaults:
+      run:
+        working-directory: .
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Terraform
@@ -60,23 +72,55 @@ jobs:
           role-session-name: github-actions
 
       - name: Terraform Init
-        run: terraform init \
-          -backend-config="bucket=ten-terraform-statefile" \
-          -backend-config="key=terraform/${{ matrix.env }}/terraform.tfstate" \
-          -backend-config="region=ap-south-1" \
-          -backend-config="encrypt=true" \
-          -reconfigure
+        id: init
+        run: |
+          terraform init \
+            -backend-config="bucket=ten-terraform-statefile" \
+            -backend-config="key=terraform/${{ matrix.env }}/terraform.tfstate" \
+            -backend-config="region=ap-south-1" \
+            -backend-config="encrypt=true" \
+            -reconfigure
 
-      - name: Download Plan Artifact
-        uses: actions/download-artifact@v4
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan (write binary plan)
+        id: plan
+        run: |
+          terraform plan -var-file="${{ matrix.env }}.tfvars" -out=tfplan-${{ matrix.env }}
+          terraform show -no-color tfplan-${{ matrix.env }} > plan-${{ matrix.env }}.txt
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ matrix.env }}
-          path: .
+          path: |
+            tfplan-${{ matrix.env }}
+            plan-${{ matrix.env }}.txt
 
-      - name: Terraform Apply (Dev/QA)
-        if: ${{ matrix.env == 'dev' || matrix.env == 'qa' }}
-        run: terraform apply -auto-approve tfplan-${{ matrix.env }}
-
-      - name: Terraform Apply (UAT/Prod)
-        if: ${{ matrix.env == 'uat' || matrix.env == 'prod' }}
-        run: terraform apply tfplan-${{ matrix.env }}
+      - name: Post plan as PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'plan-${{ matrix.env }}.txt';
+            let body = '';
+            try {
+              body = fs.readFileSync(path, 'utf8');
+            } catch (err) {
+              body = `Could not read plan file for ${{ matrix.env }}: ${err}`;
+            }
+            // Truncate if too long
+            const max = 64000;
+            let commentBody = `### Terraform plan for **${{ matrix.env }}**\n\n\`\`\`\n${body.slice(0, max)}\n\`\`\``;
+            if (body.length > max) {
+              commentBody += '\n\n*Plan truncated due to size*';
+            }
+            const pr = context.payload.pull_request.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr,
+              body: commentBody
+            });

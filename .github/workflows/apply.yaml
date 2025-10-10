@@ -1,4 +1,4 @@
-name: Terraform Apply
+name: tf-apply
 
 on:
   push:
@@ -12,40 +12,59 @@ permissions:
 
 jobs:
   detect-environments:
-    name: Detect Environments
+    name: Detect .tfvars Environments
     runs-on: ubuntu-latest
     outputs:
-      environments: ${{ steps.detect.outputs.env_list }}
+      env_list: ${{ steps.set.outputs.json_envs }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect .tfvars files
-        id: detect
+      - name: Detect .tfvars
+        id: set
         run: |
           files=$(ls *.tfvars 2>/dev/null || true)
           if [ -z "$files" ]; then
-            echo "No tfvars files found, skipping..."
-            echo "env_list=[]" >> $GITHUB_OUTPUT
-          else
-            envs=$(echo "$files" | sed 's/.tfvars//g' | jq -R -s -c 'split("\n")[:-1]')
-            echo "Detected environments: $envs"
-            echo "env_list=$envs" >> $GITHUB_OUTPUT
+            echo "json_envs=[]" >> $GITHUB_OUTPUT
+            echo "No .tfvars files found."
+            exit 0
           fi
 
+          envs=()
+          for f in $files; do
+            if [[ "$f" == *.tfvars ]]; then
+              envs+=("${f%.tfvars}")
+            fi
+          done
+
+          jq_input=$(printf '%s\n' "${envs[@]}" | awk 'BEGIN{ORS=","} {printf "\"%s\"", $0} END{print ""}' | sed 's/,$//')
+          json="[$jq_input]"
+          echo "Detected envs: $json"
+          echo "json_envs=$json" >> $GITHUB_OUTPUT
+
   terraform-apply:
-    name: Terraform Apply
+    name: Terraform Apply (per environment)
     needs: detect-environments
-    if: ${{ fromJson(needs.detect-environments.outputs.environments) != '' }}
+    if: ${{ needs.detect-environments.outputs.env_list != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        env: ${{ fromJson(needs.detect-environments.outputs.environments) }}
+        env: ${{ fromJson(needs.detect-environments.outputs.env_list) }}
+    # Use GitHub environment with same name; protect uat/prod via Environment settings to require approvals.
     environment: ${{ matrix.env }}
+    defaults:
+      run:
+        working-directory: .
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ matrix.env }}
+          path: .
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -68,16 +87,9 @@ jobs:
             -backend-config="encrypt=true" \
             -reconfigure
 
-      - name: Download Plan Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-${{ matrix.env }}
-          path: .
-
-      - name: Terraform Apply (Dev/QA)
-        if: ${{ matrix.env == 'dev' || matrix.env == 'qa' }}
-        run: terraform apply -auto-approve tfplan-${{ matrix.env }}
-
-      - name: Terraform Apply (UAT/Prod)
-        if: ${{ matrix.env == 'uat' || matrix.env == 'prod' }}
-        run: terraform apply tfplan-${{ matrix.env }}
+      - name: Terraform Apply
+        id: apply
+        run: |
+          # We rely on GitHub environment protections for manual approval on uat/prod.
+          # After approval, job will start and we apply automatically (-auto-approve).
+          terraform apply -auto-approve tfplan-${{ matrix.env }}
