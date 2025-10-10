@@ -1,3 +1,100 @@
+# name: tf-apply
+
+# on:
+#   push:
+#     branches:
+#       - main
+#   workflow_dispatch:
+
+# permissions:
+#   contents: read
+#   id-token: write
+
+# jobs:
+#   detect-environments:
+#     name: Detect .tfvars Environments
+#     runs-on: ubuntu-latest
+#     outputs:
+#       env_list: ${{ steps.set.outputs.json_envs }}
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Detect .tfvars
+#         id: set
+#         run: |
+#           files=$(ls *.tfvars 2>/dev/null || true)
+#           if [ -z "$files" ]; then
+#             echo "json_envs=[]" >> $GITHUB_OUTPUT
+#             echo "No .tfvars files found."
+#             exit 0
+#           fi
+
+#           envs=()
+#           for f in $files; do
+#             if [[ "$f" == *.tfvars ]]; then
+#               envs+=("${f%.tfvars}")
+#             fi
+#           done
+
+#           jq_input=$(printf '%s\n' "${envs[@]}" | awk 'BEGIN{ORS=","} {printf "\"%s\"", $0} END{print ""}' | sed 's/,$//')
+#           json="[$jq_input]"
+#           echo "Detected envs: $json"
+#           echo "json_envs=$json" >> $GITHUB_OUTPUT
+
+#   terraform-apply:
+#     name: Terraform Apply (per environment)
+#     needs: detect-environments
+#     if: ${{ needs.detect-environments.outputs.env_list != '[]' }}
+#     runs-on: ubuntu-latest
+#     strategy:
+#       matrix:
+#         env: ${{ fromJson(needs.detect-environments.outputs.env_list) }}
+#     # Use GitHub environment with same name; protect uat/prod via Environment settings to require approvals.
+#     environment: ${{ matrix.env }}
+#     defaults:
+#       run:
+#         working-directory: .
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Download Plan Artifact
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: tfplan-${{ matrix.env }}
+#           path: .
+
+#       - name: Setup Terraform
+#         uses: hashicorp/setup-terraform@v3
+#         with:
+#           terraform_version: 1.6.0
+
+#       - name: Configure AWS credentials via OIDC
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           role-to-assume: arn:aws:iam::593002333172:role/BE_Github_Actions
+#           aws-region: ap-south-1
+#           role-session-name: github-actions
+
+#       - name: Terraform Init
+#         run: |
+#           terraform init \
+#             -backend-config="bucket=ten-terraform-statefile" \
+#             -backend-config="key=terraform/${{ matrix.env }}/terraform.tfstate" \
+#             -backend-config="region=ap-south-1" \
+#             -backend-config="encrypt=true" \
+#             -reconfigure
+
+#       - name: Terraform Apply
+#         id: apply
+#         run: |
+#           # We rely on GitHub environment protections for manual approval on uat/prod.
+#           # After approval, job will start and we apply automatically (-auto-approve).
+#           terraform apply -auto-approve tfplan-${{ matrix.env }}
+
+
 name: tf-apply
 
 on:
@@ -43,14 +140,14 @@ jobs:
           echo "json_envs=$json" >> $GITHUB_OUTPUT
 
   terraform-apply:
-    name: Terraform Apply (per environment)
+    name: Terraform Apply
     needs: detect-environments
     if: ${{ needs.detect-environments.outputs.env_list != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
         env: ${{ fromJson(needs.detect-environments.outputs.env_list) }}
-    # Use GitHub environment with same name; protect uat/prod via Environment settings to require approvals.
+    # Use environment for approval gating
     environment: ${{ matrix.env }}
     defaults:
       run:
@@ -59,12 +156,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Download Plan Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-${{ matrix.env }}
-          path: .
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -78,6 +169,7 @@ jobs:
           aws-region: ap-south-1
           role-session-name: github-actions
 
+      # ---- Terraform steps (same as plan) ----
       - name: Terraform Init
         run: |
           terraform init \
@@ -87,9 +179,13 @@ jobs:
             -backend-config="encrypt=true" \
             -reconfigure
 
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -var-file="${{ matrix.env }}.tfvars" -out=tfplan-${{ matrix.env }}
+
+      # ---- Apply ----
       - name: Terraform Apply
-        id: apply
-        run: |
-          # We rely on GitHub environment protections for manual approval on uat/prod.
-          # After approval, job will start and we apply automatically (-auto-approve).
-          terraform apply -auto-approve tfplan-${{ matrix.env }}
+        run: terraform apply -auto-approve tfplan-${{ matrix.env }}
+
