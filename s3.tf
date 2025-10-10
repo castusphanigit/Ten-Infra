@@ -1,6 +1,6 @@
-# module "s3" {
-#   source      = "./modules/s3"
-#   bucket_name = var.bucket_name
-#   s3_tags     = var.s3_tags
+module "s3" {
+  source      = "./modules/s3"
+  bucket_name = var.bucket_name
+  s3_tags     = var.s3_tags
 
-# }
+}
