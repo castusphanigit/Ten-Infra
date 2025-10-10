@@ -76,9 +76,9 @@ nat_tags = {
 
 ####################Secrets####################
 fe_existing-secret = "FE_Nextgen_Secreats"
-new_fe_secret      = "Test_FE_Nextgen_Secreats"
+new_fe_secret      = "Test_prod_FE_Nextgen_Secreats"
 be_existing-secret = "BE_Nextgen_Secreats"
-new_be_secret      = "Test_BE_Nextgen_Secreats"
+new_be_secret      = "Test_prod_BE_Nextgen_Secreats"
 
 
 
