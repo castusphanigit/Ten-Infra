@@ -1,0 +1,75 @@
+name: terraform-destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to destroy"
+        required: true
+        default: "dev"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      # 1️⃣ Checkout repo
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2️⃣ Configure AWS credentials via OIDC
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::593002333172:role/BE_Github_Actions
+          aws-region: ap-south-1
+          role-session-name: github-actions
+
+      # 3️⃣ Detect if the environment .tfvars exists
+      - name: Check tfvars file
+        id: tfvars
+        run: |
+          if [ -f "${{ github.event.inputs.environment }}.tfvars" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 4️⃣ Stop if tfvars does not exist
+      - name: Stop if tfvars not found
+        if: steps.tfvars.outputs.exists == 'false'
+        run: |
+          echo "No tfvars file found for ${{ github.event.inputs.environment }}"
+          exit 1
+
+      # 5️⃣ Terraform Init
+      - name: Terraform Init
+        if: steps.tfvars.outputs.exists == 'true'
+        run: |
+          terraform init \
+            -backend-config="bucket=ten-terraform-statefile" \
+            -backend-config="key=terraform/${{ github.event.inputs.environment }}/terraform.tfstate" \
+            -backend-config="region=ap-south-1" \
+            -backend-config="encrypt=true" \
+            -reconfigure
+
+      # 6️⃣ Terraform Plan for destroy (optional review)
+      - name: Terraform Plan Destroy
+        if: steps.tfvars.outputs.exists == 'true'
+        run: terraform plan -destroy -var-file="${{ github.event.inputs.environment }}.tfvars" -out=tfdestroy
+
+      # 7️⃣ Terraform Destroy (automatic for dev/qa)
+      - name: Terraform Destroy (Dev/QA)
+        if: steps.tfvars.outputs.exists == 'true' && (github.event.inputs.environment == 'dev' || github.event.inputs.environment == 'qa')
+        run: terraform apply -auto-approve tfdestroy
+
+      # 8️⃣ Terraform Destroy (UAT/PROD requires manual approval)
+      - name: Terraform Destroy (UAT/PROD)
+        if: steps.tfvars.outputs.exists == 'true' && (github.event.inputs.environment == 'uat' || github.event.inputs.environment == 'prod')
+        run: terraform apply tfdestroy
+        # GitHub environment will pause for approval if required

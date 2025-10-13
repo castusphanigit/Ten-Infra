@@ -4,7 +4,7 @@ module "FE_Fargate" {
   task_family          = var.fe_task_family
   cpu                  = var.cpu
   memory               = var.memory
-  execution_role_arn   = var.execution_role_arn
+  execution_role_arn   = module.ecs_iam_role.role_arn
   task_definition_name = var.fe_task_definition_name
   image_name           = module.fe_ecr.repository_url
   container_port       = var.fe_container_port
@@ -17,7 +17,7 @@ module "FE_Fargate" {
   target_group_arn   = module.fe_alb.tg_arn
   container_name     = var.fe_container_name
   desired_count      = var.fe_desired_count
-  depends_on         = [module.private_subnet-web1]
+  depends_on         = [module.private_subnet-web1, module.ecs_iam_role]
 }
 
 
@@ -27,7 +27,7 @@ module "BE_Fargate" {
   task_family          = var.be_task_family
   cpu                  = var.cpu
   memory               = var.memory
-  execution_role_arn   = var.execution_role_arn
+  execution_role_arn   = module.ecs_iam_role.role_arn
   task_definition_name = var.be_task_definition_name
   image_name           = module.be_ecr.repository_url
   container_port       = var.be_container_port
@@ -40,5 +40,5 @@ module "BE_Fargate" {
   target_group_arn   = module.be_alb.tg_arn
   container_name     = var.be_container_name
   desired_count      = var.be_desired_count
-  depends_on         = [module.private_subnet-app1]
+  depends_on         = [module.private_subnet-app1, module.ecs_iam_role]
 }
