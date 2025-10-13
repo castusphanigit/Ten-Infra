@@ -40,5 +40,5 @@ module "BE_Fargate" {
   target_group_arn   = module.be_alb.tg_arn
   container_name     = var.be_container_name
   desired_count      = var.be_desired_count
-  depends_on         = [module.private_subnet-app1, moduleecs_iam_role]
+  depends_on         = [module.private_subnet-app1, module.ecs_iam_role]
 }
