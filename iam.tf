@@ -1,4 +1,4 @@
-module "iam_example" {
+module "ecs_iam_role" {
   source = "./modules/iam"
 
   role_name = "ten-ecsTaskExecutionRole"
