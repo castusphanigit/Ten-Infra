@@ -60,7 +60,7 @@ pub_subnet_cidr       = "11.0.255.0/24"
 pub_availability_zone = "ap-south-1a"
 pub_subnet_name       = "Ten-Public-subnet"
 
-###################RT######################################
+###################RT#######################################
 private_rt_tags = {
   name = "Ten_Private_RT"
 }
